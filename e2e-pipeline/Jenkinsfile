@@ -1,0 +1,813 @@
+def envVars = [:]
+
+pipeline {
+    agent any
+
+    environment {
+        CHROME_VERSION = "110.0.5481.77-1"
+        CHROME_URL = "https://mirror.cs.uchicago.edu/google-chrome/pool/main/g/google-chrome-stable/google-chrome-stable_110.0.5481.77-1_amd64.deb"
+        CHROME_DEB = "google-chrome-stable_110.0.5481.77-1_amd64.deb"
+        CHROMEDRIVER_URL = "https://old.chromedriver.getwebdriver.com/110.0.5481.77/chromedriver_linux64.zip"
+        CHROMEDRIVER_ZIP = "chromedriver_linux64.zip"
+        PYTHONUNBUFFERED = "1"
+        DOTNET_VERSION = '8.0.100'
+        NODE_VERSION = '16'
+        PATH = "$HOME/.dotnet:$PATH"
+    }
+    
+    stages {
+        
+        stage('Remove existing Stuff from previous runs') {
+            steps {
+                sh '''
+                    rm -rf $WORKSPACE/linux-unpacked
+                    rm -rf $WORKSPACE/dotnet-install.sh*
+                    rm -rf $WORKSPACE/Autorentool@tmp
+                    [ -d "$WORKSPACE" ] && ls -l $WORKSPACE
+                '''
+            }
+        }
+        
+        stage('Remove existing Chrome and repository') {
+            steps {
+                sh '''
+                    # Remove Chrome if installed
+                    sudo apt-get remove -y google-chrome-stable || true
+                    sudo apt-get autoremove -y
+
+                    # Remove Chrome repository
+                    sudo rm -f /etc/apt/sources.list.d/google-chrome.list
+                    sudo rm -f /etc/apt/trusted.gpg.d/google-chrome*
+
+                    # Update package lists
+                    sudo apt-get update
+                '''
+            }
+        }
+        
+        stage('Install prerequisites') {
+            steps {
+                sh '''
+                    sudo apt-get update
+                    sudo apt-get autoremove -y
+                    sudo apt-get -f install -y
+                    sudo apt-get install -y \
+                        apt-transport-https \
+                        ca-certificates \
+                        curl tree \
+                        gnupg \
+                        lsb-release \
+                        libvulkan1 xdg-utils \
+                        apt-utils
+                '''
+                
+            }
+        }
+        
+        stage('Set up Docker repository') {
+            steps {
+                sh '''
+                    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --batch --yes --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+                    echo \
+                      "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu \
+                      $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+                '''
+            }
+        }
+        
+        stage('Install Dependencies') {
+            steps {
+                sh '''
+                    sudo apt-get update
+                    sudo apt-get install -y wget xvfb xdotool ffmpeg libgtk-3-0 libnotify4 libgconf-2-4 libnss3 libxss1 libasound2 libgbm1 \
+                        libx11-xcb1 libxcb-dri3-0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+                        libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xfixes0 libxcb-xinerama0 libxcb-xkb1 \
+                        x11-utils libxkbcommon-x11-0 \
+                        libu2f-udev \
+                        tree git unzip \
+                        docker-ce docker-ce-cli containerd.io \
+                        imagemagick lsof net-tools
+                '''
+            }
+        }
+        
+        stage('Install Python Dependencies') {
+            steps {
+                script {
+                    sh 'python3 --version'
+        
+                    // Download get-pip.py and install pip
+                    sh '''
+                        curl https://bootstrap.pypa.io/get-pip.py -o get-pip.py
+                        python3 get-pip.py
+                        python3 -m pip --version
+                    '''
+        
+                    // Now install the required packages
+                    sh '''
+                        python3 -m pip install --upgrade pip
+                        python3 -m pip install docker selenium
+                    '''
+                    
+                    sh '''
+                        if ! command -v python &> /dev/null; then
+                            echo "Creating symbolic link for python -> python3"
+                            if [ -e /usr/bin/python ]; then
+                                echo "/usr/bin/python already exists. Removing it."
+                                sudo rm -f /usr/bin/python
+                            fi
+                            sudo ln -s $(command -v python3) /usr/bin/python
+                        else
+                            echo "Python command already exists"
+                        fi
+                    '''
+                }
+            }
+        }
+        
+        stage('Setup Chrome and ChromeDriver Environment') {
+            //when { expression { false } }
+            steps {
+                script {
+                    // Setup for Chrome
+                    sh "mkdir -p /tmp/chrome"
+                    def isChromeDownloaded = fileExists("/tmp/chrome/${CHROME_DEB}")
+                    
+                    if (isChromeDownloaded) {
+                        echo "Chrome loaded from cache"
+                        sh "echo 'DONE' > /tmp/chrome_download_progress.log"
+                    } else {
+                        echo "Downloading Chrome in background..."
+                        sh """
+                            (
+                                curl -L "${CHROME_URL}" -o "/tmp/chrome/${CHROME_DEB}" --progress-bar 2>&1 | tee /tmp/chrome_download_progress.log > /dev/null
+                                echo "DONE" >> /tmp/chrome_download_progress.log
+                            ) &
+                        """
+                    }
+
+                    // Setup for ChromeDriver
+                    sh "mkdir -p /tmp/chromedriver"
+                    def isChromeDriverDownloaded = fileExists("/tmp/chromedriver/${CHROMEDRIVER_ZIP}")
+                    
+                    if (isChromeDriverDownloaded) {
+                        echo "ChromeDriver loaded from cache"
+                        sh "echo 'DONE' > /tmp/chromedriver_download_progress.log"
+                    } else {
+                        echo "Downloading ChromeDriver in background..."
+                        sh """
+                            (
+                                curl -L "${CHROMEDRIVER_URL}" -o "/tmp/chromedriver/${CHROMEDRIVER_ZIP}" --progress-bar 2>&1 | tee /tmp/chromedriver_download_progress.log > /dev/null
+                                echo "DONE" >> /tmp/chromedriver_download_progress.log
+                            ) &
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Install Chrome and ChromeDriver') {
+            //when { expression { false } }
+            steps {
+                sh """
+                    # Wait for Chrome download
+                    echo "Waiting for Chrome download to complete..."
+                    while true; do
+                      status=\$(tr '\\r' '\\n' < /tmp/chrome_download_progress.log | tail -n 1)
+                      if [ "\$status" = "DONE" ]; then
+                        echo "Chrome download completed"
+                        break
+                      else
+                        echo "Chrome download progress: \$status"
+                      fi
+                      sleep 2
+                    done
+
+                    # Wait for ChromeDriver download
+                    echo "Waiting for ChromeDriver download to complete..."
+                    while true; do
+                      status=\$(tr '\\r' '\\n' < /tmp/chromedriver_download_progress.log | tail -n 1)
+                      if [ "\$status" = "DONE" ]; then
+                        echo "ChromeDriver download completed"
+                        break
+                      else
+                        echo "ChromeDriver download progress: \$status"
+                      fi
+                      sleep 2
+                    done
+
+                    # Install Chrome
+                    if [ -f "/tmp/chrome/${CHROME_DEB}" ]; then
+                      sudo dpkg -i "/tmp/chrome/${CHROME_DEB}" || sudo apt-get -f install -y
+                    else
+                      echo "Chrome download failed"
+                      exit 1
+                    fi
+
+                    # Install ChromeDriver
+                    if [ -f "/tmp/chromedriver/${CHROMEDRIVER_ZIP}" ]; then
+                      unzip -o "/tmp/chromedriver/${CHROMEDRIVER_ZIP}" -d /tmp/chromedriver
+                      sudo mv /tmp/chromedriver/chromedriver /usr/bin/chromedriver
+                      sudo chmod +x /usr/bin/chromedriver
+                    else
+                      echo "ChromeDriver download failed"
+                      exit 1
+                    fi
+
+                    # Verify installations
+                    echo "Chrome version:"
+                    google-chrome --version
+                    echo "ChromeDriver version:"
+                    chromedriver --version
+                """
+            }
+        }
+
+        stage('Clone Repositories') {
+            steps {
+                sh '''
+                    # Funktion zum Klonen oder Aktualisieren eines Repositories
+                    clone_or_update_repo() {
+                        local repo_url="$1"
+                        local dir_name="$2"
+                        if [ ! -d "$dir_name" ]; then
+                            echo "Cloning $repo_url into $dir_name"
+                            git clone "$repo_url" "$dir_name"
+                        elif [ -d "$dir_name/.git" ]; then
+                            echo "Updating existing repository in $dir_name"
+                            cd "$dir_name"
+                            git pull
+                            git reset --hard
+                            cd ..
+                        else
+                            echo "Directory $dir_name exists but is not a git repository. Removing and cloning."
+                            rm -rf "$dir_name"
+                            git clone "$repo_url" "$dir_name"
+                        fi
+                    }
+        
+                    # AdlerDevelopmentEnvironment
+                    clone_or_update_repo "https://github.com/ProjektAdLer/AdlerDevelopmentEnvironment" "AdlerDevelopmentEnvironment"
+        
+                    # Autorentool
+                    clone_or_update_repo "https://github.com/ProjektAdLer/Autorentool" "Autorentool"
+        
+                    # Workflow
+                    if [ ! -d "workflow" ]; then
+                        mkdir workflow
+                    elif [ ! -d "workflow/.git" ]; then
+                        rm -rf workflow
+                        mkdir workflow
+                    fi
+                    
+                    if [ ! -d "workflow/.git" ]; then
+                        git clone --no-checkout https://github.com/andreasweishaupt/AdlerDevelopmentEnvironment workflow
+                        cd workflow
+                        git sparse-checkout init --cone
+                        git sparse-checkout set .github/workflows/
+                        git checkout
+                        cd ..
+                    else
+                        echo "Updating existing workflow repository"
+                        cd workflow
+                        git reset --hard HEAD
+                        git clean -fd
+                        git pull
+                        cd ..
+                    fi
+                '''
+            }
+        }
+
+        stage('Display Directory Structure') {
+            steps {
+                sh '''
+                    tree -L 2 .
+                    tree -a -L 3 workflow
+                '''
+            }
+        }
+
+        stage('Process .env File') {
+            steps {
+                sh '''
+                    echo "load .env and reformat"
+                    mkdir -p cleaned_env
+                    awk '
+                    BEGIN { FS=": "; OFS="=" }
+                    {
+                        if ($0 ~ /^[[:space:]]*#/ || NF == 0) {
+                            print $0;  # Kommentare und leere Zeilen unverändert ausgeben
+                        } else if (index($0, ":") > 0 && index($2, ",") > 0) {
+                            split($2, values, ",");
+                            for (i in values) {
+                                print $1 "_ARRAY_" (i-1) OFS values[i];
+                            }
+                        } else {
+                            print $0;  # Andere Zeilen unverändert ausgeben
+                        }
+                    }
+                    ' AdlerDevelopmentEnvironment/non-moodle/.env > cleaned_env/.env
+
+                    # Entferne Kommentare am Ende der Zeilen
+                    sed -i 's/[[:space:]]*#.*$//' cleaned_env/.env
+
+                    cat cleaned_env/.env
+                '''
+            }
+        }
+        
+        stage('Set Environment Variables from .env') {
+            steps {
+                script {
+                    // Lese die bereinigte .env Datei ein
+                    def envFileContent = readFile('cleaned_env/.env').trim()
+                    
+                    def newEnvVars = [:]
+                    // Verarbeite jede Zeile der .env Datei
+                    envFileContent.split('\n').each { line ->
+                        if (line.contains('=')) {
+                            def parts = line.split('=', 2)
+                            if (parts.size() == 2) {
+                                def key = parts[0].trim()
+                                def value = parts[1].trim()
+                                sh """
+                                    echo "${key}"
+                                    echo "${value}"
+                                """
+                                newEnvVars[key] = value
+                                envVars[key] = value
+                            }
+                        }
+                    }
+        
+                    // Setze die Umgebungsvariablen mit withEnv
+                    withEnv(newEnvVars.collect { key, value -> "${key}=${value}" }) {
+                        echo "Environment variables set from .env:"
+                        sh 'env'
+                    }
+                }
+            }
+        }
+        
+        stage('Check Environment Variables from .env') {
+            steps {
+                script {
+                    sh """
+                        echo "envVars from .env"
+                        echo "_MOODLE_USER = ${envVars._MOODLE_USER}"
+                        echo "_MOODLE_PW = ${envVars._MOODLE_PW}"
+                        echo "_USER_NAME_ARRAY_1 = ${envVars._USER_NAME_ARRAY_1}"
+                        echo "_USER_NAME_ARRAY_0 = ${envVars._USER_NAME_ARRAY_0}"
+                        echo "_USER_PASSWORD_ARRAY_1 = ${envVars._USER_PASSWORD_ARRAY_1}"
+                        echo "_USER_PASSWORD_ARRAY_0 = ${envVars._USER_PASSWORD_ARRAY_0}"
+                        echo "_USER_ROLE_ARRAY_1 = ${envVars._USER_ROLE_ARRAY_1}"
+                        echo "_USER_ROLE_ARRAY_0 = ${envVars._USER_ROLE_ARRAY_0}"
+                        echo "_DB_ROOT_PW = ${envVars._DB_ROOT_PW}"
+                        echo "_DB_BACKEND_PW = ${envVars._DB_BACKEND_PW}"
+                        echo "_DB_MOODLE_PW = ${envVars._DB_MOODLE_PW}"
+                        echo "_DOMAIN = ${envVars._DOMAIN}"
+                        echo "_URL_MOODLE = ${envVars._URL_MOODLE}"
+                        echo "_URL_BACKEND = ${envVars._URL_BACKEND}"
+                        echo "_URL_3D = ${envVars._URL_3D}"
+                        echo "_DB_BACKEND_USER = ${envVars._DB_BACKEND_USER}"
+                        echo "_DB_BACKEND_NAME = ${envVars._DB_BACKEND_NAME}"
+                        echo "_DB_MOODLE_USER = ${envVars._DB_MOODLE_USER}"
+                        echo "_DB_MOODLE_NAME = ${envVars._DB_MOODLE_NAME}"
+                        
+                    """
+                }
+            }
+        }
+
+        stage('Make Scripts Executable and Set Environment Variables') {
+            steps {
+                script {
+                    echo "Make scripts executable and add to environment"
+        
+                    def output = sh(script: '''
+                        find workflow/.github/workflows/scripts -type f \\( -name "*.sh" -o -name "*.py" -o -name "*.bash" \\) | while read -r script; do
+                            chmod +x "$script"
+                            script_name=$(basename "$script")
+                            env_var_name="script_$(echo "$script_name" | sed 's/[.-]/_/g')"
+                            abs_path=$(realpath "$script")
+                            echo "$env_var_name=$abs_path"
+                            echo "Made executable and created env var for: $abs_path as $env_var_name" >&2
+                        done
+                    ''', returnStdout: true).trim()
+        
+                    output.split('\n').each { line ->
+                        if (line.contains('=')) {
+                            def parts = line.split('=', 2)
+                            if (parts.size() == 2) {
+                                def key = parts[0]
+                                def value = parts[1]
+                                envVars[key] = value
+                            }
+                        }
+                    }
+        
+                    // Setze die Umgebungsvariablen mit withEnv
+                    withEnv(envVars.collect { key, value -> "${key}=${value}" }) {
+                        echo "Environment variables set:"
+                        sh 'env | grep script_'
+                    }
+                }
+            }
+        }
+        
+        stage('Modify Scripts') {
+            steps {
+                script {
+                    echo "envVars content: ${envVars}"
+                    // echo "Modifying ${envVars.script_simulate_interactions_sh}:"
+                    // def myScriptPath = "${envVars.script_simulate_interactions_sh}"
+                    // echo "Script path: $myScriptPath"
+                    // sh """
+                    //     if [ -f "$myScriptPath" ]; then
+                    //         if [ -r "$myScriptPath" ]; then
+                    //             echo "File exists and is readable: $myScriptPath"
+                    //             head -n 10 "$myScriptPath"
+                    //         else
+                    //             echo "File exists but is not readable: $myScriptPath"
+                    //             exit 1
+                    //         fi
+                    //     else
+                    //         echo "File does not exist: $myScriptPath"
+                    //         exit 1
+                    //     fi
+                    //     sed -i 's|\\\$script_define_test_script_sh|${envVars.script_define_test_script_sh}|' "$myScriptPath"
+                    //     head -n 10 "$myScriptPath"
+                    // """
+                    echo "----------------"
+                    echo "----------------"
+                    echo "----------------"
+                    
+        
+                    // Filtere die Skripte und Variablen aus envVars, die mit "script_" beginnen
+                    def scripts = envVars.findAll { key, value -> key.startsWith('script_') }
+    
+                    // Iteriere über alle Skripte
+                    scripts.each { key, scriptPath ->
+                        echo "Processing script: $scriptPath"
+        
+                        // Überprüfe, ob die Datei existiert
+                        sh """
+                            if [ -f "$scriptPath" ]; then
+                                echo "File exists: $scriptPath"
+                            else
+                                echo "File does not exist: $scriptPath"
+                                exit 1
+                            fi
+                        """
+        
+                        // Iteriere über alle Variablen und ersetze sie in der Datei
+                        scripts.each { varKey, varValue ->
+                            echo "Replacing \$$varKey with $varValue in $scriptPath"
+                            sh """
+                                sed -i 's|\\\$$varKey|$varValue|g' "$scriptPath"
+                            """
+                        }
+        
+                        // Ausgabe der ersten Zeilen des modifizierten Skripts zur Überprüfung
+                        // sh """
+                        //     echo "Modified script content:"
+                        //     head -n 10 "$scriptPath"
+                        // """
+                    }
+                }
+            }
+        }
+        
+        stage('Setup .NET') {
+            //when { expression { false } }
+            steps {
+                sh """
+                    wget https://dot.net/v1/dotnet-install.sh
+                    chmod +x dotnet-install.sh
+                    ./dotnet-install.sh --version ${DOTNET_VERSION}
+                    ./dotnet-install.sh --version 6.0.135
+                    export PATH="\$HOME/.dotnet:\$PATH"
+                    dotnet --version
+                    dotnet --list-runtimes
+                """
+            }
+        }
+
+        stage('Set up npm') {
+            //when { expression { false } }
+            steps {
+                sh """
+                    sudo apt-get remove -y nodejs libnode72
+                    curl -fsSL https://deb.nodesource.com/setup_16.x | sudo -E bash -
+                    sudo apt-get install -y nodejs
+                    node --version
+                    npm --version
+                """
+            }
+        }
+
+        stage('Install electronize') {
+            //when { expression { false } }
+            steps {
+                dir('Autorentool') {
+                    sh 'dotnet tool restore'
+                }
+            }
+        }
+
+        stage('Install npm dependencies') {
+            //when { expression { false } }
+            steps {
+                dir('Autorentool/AuthoringTool') {
+                    sh 'npm install'
+                }
+            }
+        }
+
+        stage('Run Tailwind build') {
+            //when { expression { false } }
+            steps {
+                dir('Autorentool/AuthoringTool') {
+                    sh 'npm run tailwind-build'
+                }
+            }
+        }
+
+        stage('Build AuthoringTool binary') {
+            //when { expression { false } }
+            steps {
+                dir('Autorentool/AuthoringTool') {
+                    sh '''
+                        dotnet electronize build /target linux
+                        mv ./bin/Desktop_Publish/linux-unpacked $WORKSPACE/linux-unpacked
+                    '''
+                }
+            }
+        }
+        
+        stage('Docker Compose Up') {
+            steps {
+                dir("${WORKSPACE}/AdlerDevelopmentEnvironment/non-moodle") {
+                    script {
+                        sh '''
+                            docker compose up -d --build 
+                        '''
+                    }
+                }
+            }
+        }
+
+        stage('Wait for containers') {
+            steps {
+                script {
+                    sh "python3 ${envVars.script_wait_for_containers_py}"
+                }
+            }
+        }
+
+        stage('Check Docker containers') {
+            steps {
+                script {
+                    sh "${envVars.script_check_docker_sh}"
+                }
+            }
+        }
+        
+        stage('Check Backend Health') {
+            steps {
+                script {
+                    sh """
+                        docker inspect adlertestenvironment-backend-1
+                        echo "curl -s http://docker${envVars._URL_BACKEND}/api/health"
+                        curl -s http://docker${envVars._URL_BACKEND}/api/health
+                        echo "hallo"
+                    """
+                }
+            }
+        }
+        
+        stage('Sleep') {
+            when { expression { false } }
+            steps {
+                script {
+                    sh 'sleep 1000'
+                }
+            }
+        }
+        
+        stage('Test Moodle') {
+            steps {
+                script {
+                    sh """
+                        echo "curl -s http://docker${envVars._URL_MOODLE}"
+                        curl -s http://docker${envVars._URL_MOODLE}
+                    """
+                }
+            }
+        }
+        
+        stage('Start and check Xvfb') {
+            steps {
+                script {
+                    sh '''
+                        echo "Starting Xvfb on display :99..."
+                        Xvfb :99 -screen 0 1920x1080x24 &
+        
+                        echo "Waiting for Xvfb to be ready..."
+                        for attempt in $(seq 1 30); do
+                            if xdpyinfo -display :99 >/dev/null 2>&1; then
+                                echo "Xvfb is ready after $attempt attempt(s)"
+                                break
+                            fi
+                            sleep 0.5
+                        done
+        
+                        # Überprüfe, ob Xvfb erfolgreich gestartet wurde
+                        if ! xdpyinfo -display :99 >/dev/null 2>&1; then
+                            echo "ERROR: Xvfb failed to start"
+                            exit 1
+                        fi
+        
+                        echo "Xvfb is ready"
+                    '''
+        
+                    // Setze die DISPLAY-Variable für nachfolgende Schritte
+                    env.DISPLAY = ":99"
+                }
+            }
+        }
+        
+        stage('Start Screen Recording') {
+            steps {
+                script {
+                    sh '''
+                        echo "WORKSPACE= ${WORKSPACE}"
+                        echo "Starting screen recording with FFmpeg..."
+                        ffmpeg -y -f x11grab -video_size 1920x1080 -i :99 -codec:v libx264 -r 30 ${WORKSPACE}/screenrecording.mp4 & echo $! > ${WORKSPACE}/a_ffmpeg_pid.txt
+                    '''
+                }
+            }
+        }
+
+        stage('Run Autorentool') {
+            steps {
+                script {
+                    sh '''
+                        # Überprüfe, ob Xvfb läuft
+                        if ! DISPLAY=:99 xdpyinfo >/dev/null 2>&1; then
+                            echo "ERROR: X server is not running properly"
+                            exit 1
+                        else
+                            echo "X server is running properly"
+                        fi
+                        
+                        # Starte das Autorentool
+                        ./linux-unpacked/authoring-tool --remote-debugging-port=9222 &
+                        tool_pid=$!
+                        sleep 3
+                        max_attempts=5
+                        
+                        for attempt in $(seq 1 $max_attempts); do
+                            echo "Attempt $attempt of $max_attempts to start Authoring Tool"
+                            
+                            # Überprüfe, ob das Fenster des Autorentools existiert
+                            window_id=$(DISPLAY=:99 xdotool search --name "^Autorentool" | head -n 1)
+                            
+                            if [ -n "$window_id" ]; then
+                                echo "Authoring Tool started successfully and loaded correctly on attempt $attempt"
+                                break
+                            else
+                                echo "Attempt $attempt failed"
+                                
+                                if [ $attempt -eq $max_attempts ]; then
+                                    echo "All $max_attempts attempts failed. Aborting pipeline."
+                                    exit 1
+                                else
+                                    # Versuche das Fenster neu zu laden (z.B. durch Drücken von Strg+R)
+                                    DISPLAY=:99 xdotool mousemove 900 500 sleep 0.1 click 1 sleep 0.1
+                                    DISPLAY=:99 xdotool mousemove 1000 600 sleep 0.1 click 1 sleep 0.1
+                                    DISPLAY=:99 xdotool mousemove 960 540 sleep 0.1 click 1 sleep 0.1
+                                    DISPLAY=:99 xdotool key "ctrl+r" sleep 1
+                                    DISPLAY=:99 xdotool key "ctrl+shift+r" sleep 2
+                                fi
+                            fi
+                        done
+        
+                        # Überprüfe, ob der Prozess des Autorentools noch läuft
+                        if ! ps -p $tool_pid > /dev/null; then
+                            echo "Authoring Tool process is not running. Aborting pipeline."
+                            exit 1
+                        fi
+                        
+                        echo "Authoring Tool is running with PID $tool_pid"
+                        echo $tool_pid > ${WORKSPACE}/authoring_tool_pid.txt
+                        cat ${WORKSPACE}/authoring_tool_pid.txt
+                    '''
+                    
+                }
+            }
+        }
+        
+        stage('Get window position') {
+            steps {
+                script {
+                    sh '''
+                        echo "Getting window position of the Authoring Tool..."
+                        window_id=$(DISPLAY=:99 xdotool search --name "Autorentool" | head -n 1)
+                        
+                        if [ -n "$window_id" ]; then
+                            window_name=$(DISPLAY=:99 xdotool getwindowname $window_id)
+                            echo "Found window: $window_name"
+        
+                            window_info=$(DISPLAY=:99 xwininfo -id $window_id)
+                            window_x=$(echo "$window_info" | grep "Absolute upper-left X" | awk '{print $4}')
+                            window_y=$(echo "$window_info" | grep "Absolute upper-left Y" | awk '{print $4}')
+                            window_width=$(echo "$window_info" | grep "Width" | awk '{print $2}')
+                            window_height=$(echo "$window_info" | grep "Height" | awk '{print $2}')
+        
+                            echo "Window position: X=$window_x, Y=$window_y"
+                            echo "Window size: Width=$window_width, Height=$window_height"
+                        else
+                            echo "Failed to find the Authoring Tool window."
+                            exit 1
+                        fi
+                    '''
+                }
+            }
+        }
+        
+        stage('Simulate interactions') {
+            steps {
+                script {
+                    // Setze die benötigten Umgebungsvariablen
+                    def BACKEND_URL = "http://docker${envVars._URL_BACKEND}"
+                    def COURSENAME = "testWorld"
+                    def USERNAME = envVars._USER_NAME_ARRAY_1
+                    def PASSWORD = envVars._USER_PASSWORD_ARRAY_1
+                    def SPACENAME = "testSpace"
+                    def ELEMENTNAME = "testElement"
+        
+                    // Ausgabe der Variablen zur Überprüfung
+                    echo "BACKEND_URL: ${BACKEND_URL}"
+                    echo "COURSENAME: ${COURSENAME}"
+                    echo "USERNAME: ${USERNAME}"
+                    echo "PASSWORD: ${PASSWORD}"
+                    echo "SPACENAME: ${SPACENAME}"
+                    echo "ELEMENTNAME: ${ELEMENTNAME}"
+                    
+                    sh '''
+                        import -display :99 -window root screenshot.png
+                        echo "Screenshot saved as screenshot.png"
+                    '''
+                    archiveArtifacts artifacts: 'screenshot.png', fingerprint: true
+        
+                    // Führe das Skript simulate_interactions.sh mit den Parametern aus
+                    sh """
+                        ${envVars.script_simulate_interactions_sh} ${BACKEND_URL} ${COURSENAME} ${USERNAME} ${PASSWORD} ${SPACENAME} ${ELEMENTNAME}
+                    """
+        
+                    // Beende den Autorentool-Prozess
+                    sh '''
+                        myPid=$(cat ${WORKSPACE}/authoring_tool_pid.txt)
+                        kill $myPid
+                   '''
+                }
+            }
+        }
+        
+        stage('Stop Recording') {
+            steps {
+                script {
+                    // Stop the FFmpeg process
+                    sh 'kill $(cat ${WORKSPACE}/a_ffmpeg_pid.txt)'
+                    sleep 5 // Give FFmpeg time to finalize the video file
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            script {
+                dir("${WORKSPACE}/AdlerDevelopmentEnvironment/non-moodle") {
+                    sh '''
+                        docker compose down
+                    '''
+                }
+                sh '''
+                    kill $(cat ${WORKSPACE}/a_ffmpeg_pid.txt)
+                    sleep 5
+                    if [ -f "${WORKSPACE}/screenrecording.mp4" ]; then
+                        echo "Screen recording file exists."
+                        ls -lh "${WORKSPACE}/screenrecording.mp4"
+                    else
+                        echo "Screen recording file does not exist."
+                        exit 1
+                    fi
+                '''
+                archiveArtifacts artifacts: 'screenrecording.mp4', fingerprint: true
+            }
+        }
+    }
+}

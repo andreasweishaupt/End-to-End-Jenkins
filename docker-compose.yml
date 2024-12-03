@@ -1,0 +1,71 @@
+version: '3.8'
+
+services:
+  jenkins:
+    image: jenkins/jenkins:lts
+    container_name: e2e-jenkins
+    restart: unless-stopped
+    privileged: true
+    environment:
+      - DOCKER_HOST=tcp://docker:2376
+      - DOCKER_CERT_PATH=/certs/client
+      - DOCKER_TLS_VERIFY=1
+    volumes:
+      - jenkins-data:/var/jenkins_home
+      - jenkins-docker-certs:/certs/client:ro
+      - /var/run/docker.sock:/var/run/docker.sock  # Bind mount for Docker socket
+      - ./e2e-pipeline:/var/jenkins_home/workspace/file
+    networks:
+      - jenkins
+    ports:
+      - "8082:8080"
+      - "50000:50000"
+
+  docker:
+    image: docker:dind
+    container_name: e2e-docker
+    privileged: true
+    environment:
+      - DOCKER_TLS_CERTDIR=/certs
+    volumes:
+      - jenkins-docker-certs:/certs/client
+    networks:
+      - jenkins
+
+  jenkins-agent-1:
+    image: test:ubuntu
+    container_name: e2e-jenkins-agent-1
+    environment:
+      - DOCKER_CERT_PATH=/certs/client
+      - DOCKER_TLS_VERIFY=1
+      - JENKINS_URL=http://jenkins:8080
+      - JENKINS_AGENT_NAME=agent-1
+      - JENKINS_SECRET=583c545fc67fc6bf0f203cce6346a0938f4ed090b301628af8baf579b2b66eaf  # Replace with actual secret from Jenkins UI
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock  # Bind mount for Docker socket
+      - ./e2e-pipeline:/var/jenkins_home/workspace/file
+    networks:
+      - jenkins
+
+  jenkins-agent-2:
+    image: test:ubuntu
+    container_name: e2e-jenkins-agent-2
+    environment:
+      - DOCKER_CERT_PATH=/certs/client
+      - DOCKER_TLS_VERIFY=1
+      - JENKINS_URL=http://jenkins:8080
+      - JENKINS_AGENT_NAME=agent-2
+      - JENKINS_SECRET=438bfb7fd6437fa2236503c6160a50a1c7eaaba19149935f4060e3e456038d8c  # Replace with actual secret from Jenkins UI
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock  # Bind mount for Docker socket
+      - ./e2e-pipeline:/var/jenkins_home/workspace/file
+    networks:
+      - jenkins
+
+networks:
+  jenkins:
+
+volumes:
+  jenkins-data:
+  jenkins-docker-certs:
+  e2e-pipeline:
