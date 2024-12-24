@@ -11,7 +11,7 @@ services:
     volumes:
       - jenkins-data:/var/jenkins_home
       - jenkins-docker-certs:/certs/client:ro
-      - ./e2e-pipeline:/var/jenkins_home/workspace/file
+      - ./pipelines:/var/jenkins_home/workspace/file
     networks:
       - jenkins
     ports:
@@ -21,6 +21,7 @@ services:
   docker:
     image: docker:dind
     container_name: e2e-docker
+    restart: unless-stopped
     privileged: true
     environment:
       - DOCKER_TLS_CERTDIR=/certs
@@ -45,7 +46,7 @@ services:
       - JENKINS_SECRET=583c545fc67fc6bf0f203cce6346a0938f4ed090b301628af8baf579b2b66eaf  # Replace with actual secret from Jenkins UI
     volumes:
       - jenkins-docker-certs:/certs/client:ro
-      - ./e2e-pipeline:/var/jenkins_home/workspace/file
+      - ./pipelines:/var/jenkins_home/workspace/file
     networks:
       - jenkins
 
@@ -61,7 +62,7 @@ services:
       - JENKINS_SECRET=438bfb7fd6437fa2236503c6160a50a1c7eaaba19149935f4060e3e456038d8c  # Replace with actual secret from Jenkins UI
     volumes:
       - jenkins-docker-certs:/certs/client:ro
-      - ./e2e-pipeline:/var/jenkins_home/workspace/file
+      - ./pipelines:/var/jenkins_home/workspace/file
     networks:
       - jenkins
 
@@ -71,4 +72,4 @@ networks:
 volumes:
   jenkins-data:
   jenkins-docker-certs:
-  e2e-pipeline:
+  pipelines:

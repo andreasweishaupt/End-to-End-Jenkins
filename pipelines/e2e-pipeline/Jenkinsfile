@@ -1,7 +1,7 @@
 def envVars = [:]
 
 pipeline {
-    agent any
+    agent { label 'agent-2' }
 
     environment {
         CHROME_VERSION = "110.0.5481.77-1"
@@ -84,7 +84,7 @@ pipeline {
                         libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xfixes0 libxcb-xinerama0 libxcb-xkb1 \
                         x11-utils libxkbcommon-x11-0 \
                         libu2f-udev \
-                        tree git unzip \
+                        tree git unzip jq \
                         docker-ce docker-ce-cli containerd.io \
                         imagemagick lsof net-tools
                 '''
@@ -247,7 +247,7 @@ pipeline {
                     }
         
                     # AdlerDevelopmentEnvironment
-                    clone_or_update_repo "https://github.com/ProjektAdLer/AdlerDevelopmentEnvironment" "AdlerDevelopmentEnvironment"
+                    clone_or_update_repo "https://github.com/andreasweishaupt/AdlerDevelopmentEnvironment" "AdlerDevelopmentEnvironment"
         
                     # Autorentool
                     clone_or_update_repo "https://github.com/ProjektAdLer/Autorentool" "Autorentool"
@@ -417,32 +417,10 @@ pipeline {
         }
         
         stage('Modify Scripts') {
+            when { expression { false } }
             steps {
                 script {
                     echo "envVars content: ${envVars}"
-                    // echo "Modifying ${envVars.script_simulate_interactions_sh}:"
-                    // def myScriptPath = "${envVars.script_simulate_interactions_sh}"
-                    // echo "Script path: $myScriptPath"
-                    // sh """
-                    //     if [ -f "$myScriptPath" ]; then
-                    //         if [ -r "$myScriptPath" ]; then
-                    //             echo "File exists and is readable: $myScriptPath"
-                    //             head -n 10 "$myScriptPath"
-                    //         else
-                    //             echo "File exists but is not readable: $myScriptPath"
-                    //             exit 1
-                    //         fi
-                    //     else
-                    //         echo "File does not exist: $myScriptPath"
-                    //         exit 1
-                    //     fi
-                    //     sed -i 's|\\\$script_define_test_script_sh|${envVars.script_define_test_script_sh}|' "$myScriptPath"
-                    //     head -n 10 "$myScriptPath"
-                    // """
-                    echo "----------------"
-                    echo "----------------"
-                    echo "----------------"
-                    
         
                     // Filtere die Skripte und Variablen aus envVars, die mit "script_" beginnen
                     def scripts = envVars.findAll { key, value -> key.startsWith('script_') }
@@ -468,19 +446,13 @@ pipeline {
                                 sed -i 's|\\\$$varKey|$varValue|g' "$scriptPath"
                             """
                         }
-        
-                        // Ausgabe der ersten Zeilen des modifizierten Skripts zur Überprüfung
-                        // sh """
-                        //     echo "Modified script content:"
-                        //     head -n 10 "$scriptPath"
-                        // """
                     }
                 }
             }
         }
         
         stage('Setup .NET') {
-            //when { expression { false } }
+            when { expression { false } }
             steps {
                 sh """
                     wget https://dot.net/v1/dotnet-install.sh
@@ -495,7 +467,7 @@ pipeline {
         }
 
         stage('Set up npm') {
-            //when { expression { false } }
+            when { expression { false } }
             steps {
                 sh """
                     sudo apt-get remove -y nodejs libnode72
@@ -508,7 +480,7 @@ pipeline {
         }
 
         stage('Install electronize') {
-            //when { expression { false } }
+            when { expression { false } }
             steps {
                 dir('Autorentool') {
                     sh 'dotnet tool restore'
@@ -517,7 +489,7 @@ pipeline {
         }
 
         stage('Install npm dependencies') {
-            //when { expression { false } }
+            when { expression { false } }
             steps {
                 dir('Autorentool/AuthoringTool') {
                     sh 'npm install'
@@ -526,7 +498,7 @@ pipeline {
         }
 
         stage('Run Tailwind build') {
-            //when { expression { false } }
+            when { expression { false } }
             steps {
                 dir('Autorentool/AuthoringTool') {
                     sh 'npm run tailwind-build'
@@ -535,7 +507,7 @@ pipeline {
         }
 
         stage('Build AuthoringTool binary') {
-            //when { expression { false } }
+            when { expression { false } }
             steps {
                 dir('Autorentool/AuthoringTool') {
                     sh '''
@@ -551,7 +523,9 @@ pipeline {
                 dir("${WORKSPACE}/AdlerDevelopmentEnvironment/non-moodle") {
                     script {
                         sh '''
-                            docker compose up -d --build 
+							sed -i 's/^_DOMAIN=localhost/_DOMAIN=docker/' .env
+							docker compose down -v --remove-orphans
+                            docker compose up -d --build --force-recreate
                         '''
                     }
                 }
@@ -581,7 +555,6 @@ pipeline {
                         docker inspect adlertestenvironment-backend-1
                         echo "curl -s http://docker${envVars._URL_BACKEND}/api/health"
                         curl -s http://docker${envVars._URL_BACKEND}/api/health
-                        echo "hallo"
                     """
                 }
             }
@@ -651,6 +624,7 @@ pipeline {
         }
 
         stage('Run Autorentool') {
+            when { expression { false } }
             steps {
                 script {
                     sh '''
@@ -710,6 +684,7 @@ pipeline {
         }
         
         stage('Get window position') {
+            when { expression { false } }
             steps {
                 script {
                     sh '''
@@ -738,6 +713,7 @@ pipeline {
         }
         
         stage('Simulate interactions') {
+            when { expression { false } }
             steps {
                 script {
                     // Setze die benötigten Umgebungsvariablen
@@ -775,6 +751,54 @@ pipeline {
                 }
             }
         }
+		
+		stage('Upload Course manual') {
+			steps {
+				script {
+					sh"""
+						echo "Fetching Moodle token..."
+						echo "_USER_NAME_ARRAY_1 = ${envVars._USER_NAME_ARRAY_1}"
+						echo "_USER_PASSWORD_ARRAY_1 = ${envVars._USER_PASSWORD_ARRAY_1}"
+					"""
+					TOKEN = sh(
+							script: "curl -s 'http://docker:8086/api/Users/Login?username=${envVars._USER_NAME_ARRAY_1}&password=${envVars._USER_PASSWORD_ARRAY_1}' | jq -r '.lmsToken'",
+						returnStdout: true
+					).trim()
+		
+					echo "Got LMS Token: ${TOKEN}"
+					
+					userId = sh(
+							script: "curl -s 'http://docker:8086/api/Users/UserData?WebServiceToken=${TOKEN}' | jq -r '.userId'",
+						returnStdout: true
+					).trim()
+		
+					echo "Got userId: ${userId}"
+					
+					worldsCreated = sh(
+						script: "curl -s -H 'token: ${TOKEN}' 'http://docker:8086/api/Worlds/author/${userId}'",
+						returnStdout: true
+					).trim()
+		
+					echo "Got worldsCreated: ${worldsCreated}"
+					
+					sh 'ls -l workflow/.github/workflows/backup'
+					
+					
+					uploadResponse = sh(
+						script: "curl -X POST -v -H 'token: ${TOKEN}' -H 'Content-Type: multipart/form-data' -H 'Accept: text/plain' -F 'backupFile=@workflow/.github/workflows/backup/testWorld.mbz' -F 'atfFile=@workflow/.github/workflows/backup/ATF_Document.json' 'http://docker:8086/api/Worlds'",
+						returnStdout: true
+					).trim()
+					
+					worldsCreated2 = sh(
+						script: "curl -s -H 'token: ${TOKEN}' 'http://docker:8086/api/Worlds/author/${userId}'",
+						returnStdout: true
+					).trim()
+		
+					echo "Got worldsCreated2: ${worldsCreated2}"
+					
+				}
+			}
+		}
         
         stage('Stop Recording') {
             steps {
@@ -785,6 +809,122 @@ pipeline {
                 }
             }
         }
+		
+		stage('Start Moodle Screen Recording') {
+            steps {
+                script {
+                    sh '''
+                        echo "WORKSPACE= ${WORKSPACE}"
+                        echo "Starting screen recording with FFmpeg..."
+                        ffmpeg -y -f x11grab -video_size 1920x1080 -i :99 -codec:v libx264 -r 30 ${WORKSPACE}/moodle_check.mp4 & echo $! > ${WORKSPACE}/b_ffmpeg_pid.txt
+                    '''
+                }
+            }
+        }
+		
+		stage('Execute Moodle Steps') {
+			steps {
+				script {					
+					sh"""
+						echo "Fetching Moodle token..."
+						echo "_USER_NAME_ARRAY_1 = ${envVars._USER_NAME_ARRAY_1}"
+						echo "_USER_PASSWORD_ARRAY_1 = ${envVars._USER_PASSWORD_ARRAY_1}"
+					"""
+					TOKEN = sh(
+							script: "curl -s 'http://docker:8086/api/Users/Login?username=${envVars._USER_NAME_ARRAY_1}&password=${envVars._USER_PASSWORD_ARRAY_1}' | jq -r '.lmsToken'",
+						returnStdout: true
+					).trim()
+		
+					echo "Got LMS Token: ${TOKEN}"
+		
+					worldsCreated = sh(
+						script: "curl -s -H 'token: ${TOKEN}' 'http://docker:8086/api/Worlds/author/${userId}'",
+						returnStdout: true
+					).trim()
+		
+					echo "Courses Response: ${worldsCreated}"
+		
+					// Extrahieren der courseId für "testWorld"
+					def courseId = sh(
+						script: """
+							echo '${worldsCreated}' | jq -r '.worlds[] | select(.worldName == "testWorld") | .worldId'
+						""",
+						returnStdout: true
+					).trim()
+
+					echo "Extracted courseId: ${courseId}"
+		
+					if (courseId && courseId != "null") {
+						echo "Kurs gefunden mit ID: ${courseId}"
+					} else {
+						error("Kurs nicht gefunden. Sind die Schritte in 'Simulate interactions' ordnungsgemäß durchgeführt worden?")
+					}
+					
+					sh"""
+						if ! DISPLAY=:99 xdpyinfo >/dev/null 2>&1; then
+							echo "ERROR: X server is not running properly"
+							exit 1
+						else
+							echo "X server is running properly"
+						fi
+						echo "_USER_NAME_ARRAY_0 = ${envVars._USER_NAME_ARRAY_0}"
+						echo "_USER_PASSWORD_ARRAY_0 = ${envVars._USER_PASSWORD_ARRAY_0}"
+						echo "script_enrol_student_py = ${envVars.script_enrol_student_py}"
+					"""
+					sh """
+						if [ ! -f ${envVars.script_enrol_student_py} ]; then
+							echo "ERROR: File ${envVars.script_enrol_student_py} does not exist."
+						else
+							echo "File ${envVars.script_enrol_student_py} exists."
+						fi
+						sed -i '/# Click on "Enrol me" button/i \\\t\t# Navigate to enrolment page\\n\\t\\tprint("Searching for the link with text 'testWorld'...")\\n\\t\\ttestworld_link = WebDriverWait(driver, TIMEOUT).until(\\n\\t\\t\\tEC.element_to_be_clickable((By.LINK_TEXT, "testWorld"))\\n\\t\\t)\\n\\t\\tprint("Link with text 'testWorld' found. Clicking on it...")\\n\\t\\ttestworld_link.click()\\n\\t\\tprint("Successfully clicked on the 'testWorld' link.")\\n\\t\\tprint("Current page title:", driver.title)\\n\\t\\tprint("Current URL:", driver.current_url)' ${envVars.script_enrol_student_py}
+					"""
+					sh "python3 ${envVars.script_enrol_student_py} http://docker:8085 ${envVars._USER_NAME_ARRAY_0} ${envVars._USER_PASSWORD_ARRAY_0} ${courseId}"
+				}
+			}
+		}
+		
+		stage('Stop Moodle Recording') {
+            steps {
+                script {
+                    // Stop the FFmpeg process
+                    sh 'kill $(cat ${WORKSPACE}/b_ffmpeg_pid.txt)'
+                    sleep 5 // Give FFmpeg time to finalize the video file
+                }
+            }
+        }
+		
+		stage('Start 3D Screen Recording') {
+            steps {
+                script {
+                    sh '''
+                        echo "WORKSPACE= ${WORKSPACE}"
+                        echo "Starting screen recording with FFmpeg..."
+                        ffmpeg -y -f x11grab -video_size 1920x1080 -i :99 -codec:v libx264 -r 30 ${WORKSPACE}/check_3d.mp4 & echo $! > ${WORKSPACE}/c_ffmpeg_pid.txt
+                    '''
+                }
+            }
+        }
+		
+		stage('Execute 3D Steps') {
+			steps {
+				script {
+					echo "Running 3d-Script"
+					sh "python3 ${envVars.script_test_3d_py} http://docker:8087 ${envVars._USER_NAME_ARRAY_0} ${envVars._USER_PASSWORD_ARRAY_0} testWorld testSpace testElement"
+				}
+			}
+		}
+		
+		stage('Stop 3D Recording') {
+            steps {
+                script {
+                    // Stop the FFmpeg process
+                    sh 'kill $(cat ${WORKSPACE}/c_ffmpeg_pid.txt)'
+                    sleep 5 // Give FFmpeg time to finalize the video file
+                }
+            }
+        }
+		
     }
     
     post {
@@ -797,7 +937,7 @@ pipeline {
                 }
                 sh '''
                     kill $(cat ${WORKSPACE}/a_ffmpeg_pid.txt)
-                    sleep 5
+                    sleep 3
                     if [ -f "${WORKSPACE}/screenrecording.mp4" ]; then
                         echo "Screen recording file exists."
                         ls -lh "${WORKSPACE}/screenrecording.mp4"
@@ -807,6 +947,32 @@ pipeline {
                     fi
                 '''
                 archiveArtifacts artifacts: 'screenrecording.mp4', fingerprint: true
+				
+				sh '''
+                    kill $(cat ${WORKSPACE}/b_ffmpeg_pid.txt)
+                    sleep 3
+                    if [ -f "${WORKSPACE}/moodle_check.mp4" ]; then
+                        echo "Screen recording file exists."
+                        ls -lh "${WORKSPACE}/moodle_check.mp4"
+                    else
+                        echo "Screen recording file does not exist."
+                        exit 1
+                    fi
+                '''
+                archiveArtifacts artifacts: 'moodle_check.mp4', fingerprint: true
+				
+				sh '''
+                    kill $(cat ${WORKSPACE}/c_ffmpeg_pid.txt)
+                    sleep 3
+                    if [ -f "${WORKSPACE}/check_3d.mp4" ]; then
+                        echo "Screen recording file exists."
+                        ls -lh "${WORKSPACE}/check_3d.mp4"
+                    else
+                        echo "Screen recording file does not exist."
+                        exit 1
+                    fi
+                '''
+                archiveArtifacts artifacts: 'check_3d.mp4', fingerprint: true
             }
         }
     }
